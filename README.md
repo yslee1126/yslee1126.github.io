@@ -7,6 +7,3 @@
   A minimal, responsive, and feature-rich Jekyll theme for technical writing.
 </div>
 
-## Documentation
-
-To learn how to use, develop, and upgrade the project, please refer to the [Wiki][wiki].
