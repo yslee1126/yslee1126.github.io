@@ -2,7 +2,7 @@
 <div align="center">
 
   <!-- markdownlint-disable-next-line -->
-  # Tech
+  # Tech blog
 
   A minimal, responsive, and feature-rich Jekyll theme for technical writing.
 </div>
