@@ -6,7 +6,7 @@ math: true
 mermaid: true
 ---
 
-1. 개요
+## 개요
 - 메세징 시스템
 - Producer, Consumer 가 있으며 Consumer Group 지원 
 - Kafka 의 topic 개념을 Redis 의 Stream 으로 이해하면 쉽다
@@ -23,7 +23,7 @@ mermaid: true
 
 
 ---
-2. 코드  
+## 코드  
 - operator 
 - RedisTemplate 이용하여 스트림 처리하기 위한 여러가지 도구들 
 
@@ -377,14 +377,13 @@ class RedisStreamScheduler(private val redisOperator: RedisOperator,
 
 ---
 
-3. 주의사항
+## 주의사항
 - Steam 이름은 key 값이므로 하나의 Steam 에 저장되는 데이터는 하나의 노드에만 쌓인다 
   - Steam 을 자주 생성하는 방식 추천 
 - Redis 에서 권장되는 데이터 크기가 500kb 이하인데 1mb 를 초과하는 연산은 오래 걸리므로 싱글 스레드인 Redis 성능에 나쁜 영향을 끼친다
 - PENDING 상태 메세지가 쌓여갈 수 있으므로 메모리 모니터링에 신경쓰면서 재처리 로직을 스케줄러 형태로 구현하는걸 추천 
 
----
-4. 회고 
+## 회고 
 - 메세지 펜딩상태가 정상처리중인지 비정상 처리중인지 구분하는 명확한 기준을 찾지 못함    
 - 부하를 여러 노드로 분산하기 위해 시간마다 새로운 스트림을 미리 생성하는 방식을 생각해 봤는데 실제 업무에 따라서 다르게 접근해도 될 것 같다
   - 스트림을 분산하기 위한 고민을 해야한다는게 다소 번거롭다 
