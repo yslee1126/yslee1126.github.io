@@ -4,7 +4,7 @@ title: 첫번째 포스팅
 #  name: groot
 #  link: https://github.com/yslee1126 
 date: 2024-12-03 10:00:00 +0900
-categories: [etc]
+categories: [Etc]
 #tags: [인사]
 math: true
 mermaid: true
