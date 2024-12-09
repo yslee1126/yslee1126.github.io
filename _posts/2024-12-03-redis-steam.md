@@ -268,6 +268,7 @@ class RedisStreamConsumer(private val redisOperator: RedisOperator): Initializin
 ```
 - 스케줄러 
 - 스트림과 구독을 시간별로 생성하고 펜딩상태인 메세지가 있으면 처리한다
+
 ```kotlin
 @Component
 @Profile("dev")
