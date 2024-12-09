@@ -372,6 +372,8 @@ class RedisStreamScheduler(private val redisOperator: RedisOperator,
 }
 ```
 
+- controller 
+- 메세지 add 를 위한 api 구현, 생략 
 
 ---
 
