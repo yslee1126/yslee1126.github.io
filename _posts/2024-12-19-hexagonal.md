@@ -14,7 +14,7 @@ mermaid: true
 --- 
 
 ### 구조
-![architecture1.png](..%2Fassets%2Fimg%2Fposts%2Farchitecture1.png)
+![architecture1.png](../assets/img/posts/architecture1.png)
 
 ```
 - groot.hexagonal
@@ -33,6 +33,7 @@ mermaid: true
   - application.service 과 domain 에서 비지니스 로직을 처리하고  
   - port 아래 interface 를 통해서 adapter 를 사용하게 된다
   - adapter 가 수정되어도 비지니스 로직 코드에 변경이 일어나지 않는다 
+
 
 --- 
 
