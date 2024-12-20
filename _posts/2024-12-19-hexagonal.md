@@ -34,7 +34,6 @@ mermaid: true
   - port 아래 interface 를 통해서 adapter 를 사용하게 된다
   - adapter 가 수정되어도 비지니스 로직 코드에 변경이 일어나지 않는다 
 
-
 --- 
 
 ### 코드 
