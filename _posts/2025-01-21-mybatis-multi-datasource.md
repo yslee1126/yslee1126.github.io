@@ -155,3 +155,4 @@ public class CommentDatasourceConfig {
   - 하지만 알파벳 순서 보다 명확하게 Config 클래드의 로딩 순서를 지정하기 위해 Import 어노테이션을 사용할 수 있다 
   - PrimaryDatasourceConfig 에 @Import({CommentDatasourceConfig.class}) 를 추가하면 CommentDatasourceConfig 가 먼저 로딩된다
   - CommentDatasourceConfig 에는 @Configuration 어노테이션을 사용할 필요가 없다 
+- Datasource 설정 후 쿼리 실행할때 DatasourceUtils.class 에 getConnection() 을 디버깅하면 실제로 어떤 datasource 를 사용하는지 확인할 수 있다
