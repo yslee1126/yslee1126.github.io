@@ -31,7 +31,8 @@ mermaid: true
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-reactor:1.6.3'
 ```
 
-- 컨트롤러 
+- 컨트롤러
+
 ```kotlin
     @GetMapping("/articles")
     suspend fun getArticles() : ResponseEntity<ArticleListResponse> {
@@ -39,11 +40,11 @@ mermaid: true
         val articleResponses = articles.map { article -> ArticleResponse(article.title, article.content) }
         return ResponseEntity.ok(ArticleListResponse(articleResponses))
     }
-
 ```
 
 - 서비스 
-  - 두가지 정보를 조회하여 List<Article> 형태로 합친다 
+  - 두가지 정보를 조회하여 List<Article> 형태로 합친다
+
 ```kotlin
 @Service
 class ArticleService(private val articleApiPort: ArticleApiPort): ArticleUseCase {
@@ -88,6 +89,7 @@ class ArticleService(private val articleApiPort: ArticleApiPort): ArticleUseCase
 
 - 어댑터 
   - WebClient 를 사용하여 비동기로 외부 API 를 호출한다 
+
 ```kotlin
 @Component
 class ArticleAdapter(private val webClient: WebClient): ArticleApiPort {
