@@ -80,6 +80,7 @@ mermaid: true
 ```
 
 - was 에 배포하기위해 spring boot servlet initializer 를 상속받은 클래스를 생성한다
+
 ```java
 public class ServletInitializer extends SpringBootServletInitializer {
 
