@@ -83,3 +83,7 @@ jcmd 프로세스아이디 Thread.print | awk '
 ```
 -XX:MaxGCPauseMillis=200
 ```
+- heap 덤프 파일 hprof 를 eclipse mat 이용해서 분석 
+  - 과도한 스레드 남고 있음 
+  - hazelcast 관련 클래스들이 static 영역에 객체를 쌓기만 하고 버리지 않음
+- gc.log 파일은 gceasy.io 온라인 분석 
