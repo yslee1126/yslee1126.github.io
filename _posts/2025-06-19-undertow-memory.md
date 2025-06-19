@@ -52,14 +52,13 @@ jcmd 프로세스아이디 Thread.print | awk '
   - 필요한 워커 스레드 수 ≈ TPS × 요청 처리 시간 (초) 
     - 대략 256 이면 충분할것으로 예상됨 
 
-### 앞으로 할일 
 - 덤프가 좀더 자세하게 남아야하는데 옵션 더 필요함
 ```
 -XX:+UseG1GC
 -XX:+PrintGCDetails
 -XX:+PrintGCDateStamps
 -Xlog:gc*:file=로그경로/gclog/gc.log:time,uptime,level,tags
-
+# 각 로그 경로에 접근 권한 필수 
 -XX:+HeapDumpOnOutOfMemoryError
 -XX:HeapDumpPath=로그경로/heapdump.hprof
 
@@ -80,3 +79,7 @@ jcmd 프로세스아이디 Thread.print | awk '
 -XX:+PrintTenuringDistribution 추가해 어떤 객체가 살아남는지 로그로 확인.
 ```
 - xms, xmx 를 서버 메모리의 60% 수준으로 낮춤 
+- gc 시간을 가능하면 짧게 가져가도록 하여 자주 실행되도록 유도하고 최고점 최저점 간격을 좁혀줌  
+```
+-XX:MaxGCPauseMillis=200
+```
