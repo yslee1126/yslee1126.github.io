@@ -1,7 +1,7 @@
 ---
 title: spring boot undertow memory 최적화 일지 
 date: 2025-04-23 17:00:00 +0900
-categories: [Kotlin]
+categories: [infra]
 math: true
 mermaid: true
 ---
@@ -19,12 +19,12 @@ mermaid: true
 ```
 - old 영역은 일정하여 문제 없어보임 
   - OC 전체 영역 OU 사용중인 영역  
+  - OC 가 늘어나면 메모리 누수 
 - metaspace 도 안정적 
   - MC, MU 가 자바옵션으로 지정한것 보다 밑돌고 있음  
 - young 영역은 급격하게 차오르는 걸로 보임 
   - Eden 영역이 매우 빠르게 차고 비워짐  
-  - Supervisor 영역이 비어있음 SOU, S1U  
-  - OC 가 일정한걸로 봐서 Eden 에서 Old 로 바로 넘어가지 않고 다 소멸되는 것으로 보임 
+  - Supervisor 영역이 한쪽만 사용되는데 g1gc 에서는 정상으로 판단 SOU, S1U   
   - Eden 이 차는 속도를 young gc 가 못따라가는 형태로 보임 
 - 인프라쪽에서 쓰레드가 너무 많다고 연락와서 동작중인 쓰레드 확인 
 ```
@@ -73,7 +73,7 @@ jcmd 프로세스아이디 Thread.print | awk '
 ```
 -XX:G1NewSizePercent=10 -XX:G1MaxNewSizePercent=50
 ```
-- supervisor 사용 유도
+- supervisor 사용 유도 필요한지?? 
 ```
 -XX:MaxTenuringThreshold=12로 늘려 객체가 Survivor Space에 더 오래 머물게 함.
 -XX:G1NewSizePercent=15로 Young Generation 크기를 약간 늘려 Survivor Regions 확보.
