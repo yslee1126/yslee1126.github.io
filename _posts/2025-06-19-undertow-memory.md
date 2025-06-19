@@ -79,4 +79,4 @@ jcmd 프로세스아이디 Thread.print | awk '
 -XX:G1NewSizePercent=15로 Young Generation 크기를 약간 늘려 Survivor Regions 확보.
 -XX:+PrintTenuringDistribution 추가해 어떤 객체가 살아남는지 로그로 확인.
 ```
-- 
+- xms, xmx 를 서버 메모리의 60% 수준으로 낮춤 
