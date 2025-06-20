@@ -1,7 +1,7 @@
 ---
 title: spring boot undertow memory 최적화 일지 
 date: 2025-04-23 17:00:00 +0900
-categories: [infra]
+categories: [java]
 math: true
 mermaid: true
 ---
@@ -53,36 +53,40 @@ jcmd 프로세스아이디 Thread.print | awk '
     - 대략 256 이면 충분할것으로 예상됨 
 
 - 덤프가 좀더 자세하게 남아야하는데 옵션 더 필요함
+
 ```
 -XX:+UseG1GC
--XX:+PrintGCDetails
--XX:+PrintGCDateStamps
+
+각 로그 경로에 접근 권한 필수 
 -Xlog:gc*:file=로그경로/gclog/gc.log:time,uptime,level,tags
-# 각 로그 경로에 접근 권한 필수 
 -XX:+HeapDumpOnOutOfMemoryError
 -XX:HeapDumpPath=로그경로/heapdump.hprof
 
 -XX:+UseStringDeduplication
 
-# 어플리케이션 성능 향상을 위한 옵션 
+어플리케이션 성능 향상을 위한 옵션 
 -Dspring.main.lazy-initialization=true   
 -Djava.security.egd=file:/dev/./urandom  
 ```
+
 - young gc 를 좀더 자주 부르도록
 ```
 -XX:G1NewSizePercent=10 -XX:G1MaxNewSizePercent=50
 ```
+
 - supervisor 사용 유도 필요한지?? 
 ```
 -XX:MaxTenuringThreshold=12로 늘려 객체가 Survivor Space에 더 오래 머물게 함.
 -XX:G1NewSizePercent=15로 Young Generation 크기를 약간 늘려 Survivor Regions 확보.
 -XX:+PrintTenuringDistribution 추가해 어떤 객체가 살아남는지 로그로 확인.
 ```
+
 - xms, xmx 를 서버 메모리의 60% 수준으로 낮춤 
 - gc 시간을 가능하면 짧게 가져가도록 하여 자주 실행되도록 유도하고 최고점 최저점 간격을 좁혀줌  
 ```
 -XX:MaxGCPauseMillis=200
 ```
+
 - heap 덤프 파일 hprof 를 eclipse mat 이용해서 분석 
   - 과도한 스레드 남고 있음 
   - hazelcast 관련 클래스들이 static 영역에 객체를 쌓기만 하고 버리지 않음
