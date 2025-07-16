@@ -1,5 +1,5 @@
 ---
-title: GCP cloud trace 설정 feat. spring boot  
+title: Spring boot 어플리케이션의 GCP cloud trace 사용 설정  
 date: 2025-07-01 17:00:00 +0900
 categories: [infra]
 math: true
