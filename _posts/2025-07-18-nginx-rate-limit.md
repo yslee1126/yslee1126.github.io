@@ -20,13 +20,14 @@ mermaid: true
   - nginx 는 허용개수를 참고하여 bucket 을 늘려나간다 예를 들어 초당 10개 허용한다면 0.1초에 버켓이 하나 생기는 형태 
   - 요청이 몰려서 허용 버켓을 초과하는 만큼 503 에러를 리턴하므로 503.html 준비되어 있으면 된다 
   - 단, 처음에는 burst 만큼 요청이 초과되어도 받아준다
+
+
 ```
 # zone 설정은 nginx.conf 에 글로벌하게 
 limit_req_zone $binary_remote_addr zone=req_limit_ip:메로리m rate=허용개수r/s;
 
 # 서비스별로 zone 적용 conf.d/서비스별.conf 
 limit_req zone=req_limit_ip burst=버스트값설정 nodelay;
-
 ```
 
 - fail2ban 
@@ -34,6 +35,8 @@ limit_req zone=req_limit_ip burst=버스트값설정 nodelay;
   - findtime 는 의심스러운 활동을 감지할 시간창(초단위)
   - findtime 내에 단일 IP 에 대하여 허용할 이벤트 개수를 maxretry 에 설정 
   - 허용한 이벤트보다 초과 활동이 감지되면 bantime 만큼 차단 
+
+
 ```
 backend = auto
 enabled = true
