@@ -1,6 +1,6 @@
 ---
 title: WebClient 와 Scouter 호환성 오류 대응 
-date: 2025-08-01 18:00:00 +0900
+date: 2025-08-01 18:30:00 +0900
 categories: [infra]
 math: true
 mermaid: true
