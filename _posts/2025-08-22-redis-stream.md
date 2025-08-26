@@ -11,7 +11,8 @@ mermaid: true
 - 이미 사용중인 Redis 가 있다면 Stream 기능으로 대체 할 수 있다  
 
 ### 설정 
-- SpringBoot data redis 의존성은 이미 사용중이라고 가정한다 
+- SpringBoot data redis 의존성은 이미 사용중이라고 가정한다
+  - lettuce 설정 역시 커스텀 되어있어야 한다 
 - 그외 Redis Stream 주요 설정은 아래와 같다 
 
 ```yaml
@@ -30,10 +31,6 @@ mermaid: true
 @Configuration
 @Slf4j
 public class RedisStreamConfig {
-
-    @Autowired
-    @Lazy // 순환 참조 이슈가 있다면 Lazy 사용, 구독하는 부분을 따로 분리한다면 그럴일 없을듯 
-    private RcvStreamHandler rcvStreamHandler;
 
     // 컨슈머를 어떻게 구성할지에 따라서 쓰레드 풀 설정 조정 필요 
     @Bean(name = "redisStreamTaskExecutor")
@@ -62,64 +59,284 @@ public class RedisStreamConfig {
 
         return StreamMessageListenerContainer.create(connectionFactory, options);
     }
-
-
-    // 수신 업무 관련 구독, 이런 부분은 다른 설정으로 분리 필요 
-    @Bean
-    public Subscription rcvSubscription(StreamMessageListenerContainer<String, MapRecord<String, String, String>> container
-            , StringRedisTemplate redisTemplate) {
-
-        // 수신 Stream, 그룹이 없다면 생성
-        createGroupIfNotExists(redisTemplate, RcvStreamHandler.STREAM_NAME, RcvStreamHandler.GROUP);
-
-        // 구독 시작
-        Subscription subscription = container.receive( // 수동 Ack 형태의 구독 
-                Consumer.from(RcvStreamHandler.GROUP, rcvStreamHandler.generateConsumerName()), // 컨슈머의 이름을 유니크하게 구분해야함, 그리고 생성한 consumer id 는 저장 해놓고 펜딩메세지 처리할때 사용 
-                StreamOffset.create(RcvStreamHandler.STREAM_NAME, ReadOffset.lastConsumed()),
-                rcvStreamHandler::handleMessage);
-
-        container.start();
-        return subscription;
-    }
-
-    private static void createGroupIfNotExists(StringRedisTemplate redisTemplate, String streamName, String groupName) {
-        try {
-            //stream key 에 ttl 적용은 장애를 유발하므로 추천하지 않고 주기적으로 trim 을 이용해서 유지할 데이터 개수를 제한 하는게 난거 같다  
-            redisTemplate.opsForStream().createGroup(streamName, groupName);
-        } catch (Exception e) {
-            log.info("Group already exists : {}", e.getMessage());
-        }
-    }
+    
 }
+
+@Configuration
+@Slf4j
+public class StreamSubscriptionConfig {
+
+  @Autowired
+  private List<AbstractRedisStreamHandler> streamHandlers;
+
+  @Autowired
+  private StreamMessageListenerContainer<String, MapRecord<String, String, String>> container;
+
+  private final Map<String, Subscription> subscriptions = new ConcurrentHashMap<>();
+
+  @Bean
+  public Map<String, Subscription> streamSubscriptions() {
+    // 각 핸들러에 대해 구독 생성
+    for (AbstractRedisStreamHandler handler : streamHandlers) {
+      String streamName = handler.getStreamName();
+      String groupName = handler.getGroupName();
+      String consumerId = handler.generateConsumerId("main"); // 이 부분에서 컨슈머를 여러개 만들 경우에 대한 고민이 필요하다 
+
+      try {
+        Subscription subscription = container.receive(
+          Consumer.from(groupName, consumerId),
+          StreamOffset.create(streamName, ReadOffset.lastConsumed()),
+          handler::handleMessage);
+
+        subscriptions.put(streamName, subscription);
+        log.info("스트림 {} 구독 설정 완료", streamName);
+      } catch (Exception e) {
+        log.error("스트림 {} 구독 설정 실패: {}", streamName, e.getMessage(), e);
+      }
+    }
+
+    // 컨테이너 시작
+    if (!container.isRunning()) {
+      container.start();
+      log.info("스트림 메시지 리스너 컨테이너 시작");
+    }
+
+    return subscriptions;
+  }
+}
+
 ```
 
-- 핸들러 구현 
+- AbstractRedisStreamHandler 핸들러 구현하고 각 업무에서 상속 받아서 processMessage 를 구현하자 
 ```java
-private final Set<String> consumerIds = ConcurrentHashMap.newKeySet();
+@Slf4j
+public abstract class AbstractRedisStreamHandler {
 
-public void handleMessage(MapRecord<String, String, String> message) {
-        try {
-            log.info("{} 메세지 도착: {}", STREAM_NAME, message.getValue());
+  @Autowired
+  protected StringRedisTemplate redisTemplate;
 
-            //비지니스 로직 
+  // 등록된 컨슈머 ID들을 추적
+  protected final Set<String> consumerIds = ConcurrentHashMap.newKeySet();
 
-        } catch (Exception e) {
-            log.error("메시지 처리 또는 ACK/삭제 실패: ID={}, 에러: {}", message.getId(), e.getMessage(), e);
-            // 실패 시 재시도 로직 또는 dead-letter queue로 전송
-        } finally {
-            // 메시지 처리 완료 후 ACK 및 삭제
-            // Ack 가 안되면 계속 pending 상태 
-          
-            redisTemplate.opsForStream().acknowledge(STREAM_NAME, GROUP, message.getId()); // 수동 ACK
-            log.info("ACK 완료: 메시지 ID {}", message.getId());
+  // 자식 클래스에서 구현해야 할 추상 메서드
 
-            // ack가 확실히 된 상태에서 delete 필요 
-            redisTemplate.opsForStream().delete(STREAM_NAME, message.getId()); // 메시지 삭제
-            log.info("Stream 메시지 삭제 완료: ID {}, 값 {}", message.getId(), message.getValue());
-        }
+  /**
+   * 처리할 스트림 이름을 반환합니다.
+   */
+  public abstract String getStreamName();
+
+  /**
+   * 처리할 컨슈머 그룹 이름을 반환합니다.
+   */
+  public abstract String getGroupName();
+
+  /**
+   * 최대 유지할 메시지 수를 반환합니다. (trim 용도)
+   */
+  protected abstract int getMaxMessages();
+
+  /**
+   * 스트림 메시지 처리 로직.
+   * 실제 비즈니스 로직은 이 메서드에서 구현해야 합니다.
+   *
+   * @param message 처리할 메시지
+   */
+  protected abstract void processMessage(MapRecord<String, String, String> message) throws JsonProcessingException;
+
+  /**
+   * 메시지를 처리하는 메서드.
+   * 공통 로직(로깅, 예외 처리, ACK, 삭제)을 처리하고 실제 비즈니스 로직은
+   * processMessage()에 위임합니다.
+   */
+  public void handleMessage(MapRecord<String, String, String> message) {
+    try {
+      log.info("{} 메시지 도착: {}", getStreamName(), message.getValue());
+
+      // 실제 메시지 처리 로직 호출 (자식 클래스에서 구현)
+      processMessage(message);
+
+    } catch (Exception e) {
+      log.error("메시지 처리 실패: ID={}, 에러: {}", message.getId(), e.getMessage(), e);
+      // 특정 실패 처리 로직은 자식 클래스에서 재정의 가능
+      handleMessageProcessingFailure(message, e);
+    } finally {
+      try {
+        // 메시지 처리 완료 후 ACK 및 삭제
+        acknowledgeAndDeleteMessage(message);
+      } catch (Exception e) {
+        log.error("메시지 ACK/삭제 실패: ID={}, 에러: {}", message.getId(), e.getMessage(), e);
+      }
+    }
+  }
+
+  /**
+   * 메시지 처리 실패 시 호출되는 메서드.
+   * 자식 클래스에서 필요시 오버라이드하여 사용.
+   */
+  protected void handleMessageProcessingFailure(MapRecord<String, String, String> message, Exception exception) {
+    // 기본 구현은 로깅만 수행. 자식 클래스에서 재정의 가능
+    log.error("메시지 처리 실패. 스트림: {}, 그룹: {}, ID: {}, 에러: {}",
+      getStreamName(), getGroupName(), message.getId(), exception.getMessage());
+  }
+
+  /**
+   * 메시지 ACK 및 삭제 처리.
+   */
+  protected void acknowledgeAndDeleteMessage(MapRecord<String, String, String> message) {
+    redisTemplate.opsForStream().acknowledge(getStreamName(), getGroupName(), message.getId());
+    log.debug("ACK 완료: 메시지 ID {}", message.getId());
+
+    redisTemplate.opsForStream().delete(getStreamName(), message.getId());
+    log.debug("Stream 메시지 삭제 완료: ID {}", message.getId());
+  }
+
+  /**
+   * 컨슈머 ID 생성.
+   */
+  public String generateConsumerId(String customerId) {
+    String machineName = "";
+    try {
+      machineName = System.getenv("HOSTNAME"); // K8s에서 자동으로 설정됨
+      if (machineName == null || machineName.isEmpty()) {
+        machineName = InetAddress.getLocalHost().getHostName();
+        log.warn("pod name is null or empty, use local hostname: {}", machineName);
+      }
+    } catch (Exception e) {
+      log.error("Failed to get pod name: {}", e.getMessage(), e);
+      machineName = "unknown-host";
     }
 
-// handleMessage 에서 받아온 messgae 를 DTO 로 전환하는 코드 예시 
+    String id = String.format("%s-consumer-%s-%s", getStreamName(), customerId, machineName);
+    consumerIds.add(id);
+    log.info("생성된 컨슈머 ID: {}", id);
+    return id;
+  }
+
+  /**
+   * 처리되지 않은 메시지(Pending) 처리.
+   * 스케줄러로 주기적으로 실행됨.
+   */
+  @Scheduled(fixedRate = 60000) // 1분 마다
+  public void processPendingMessages() {
+    try {
+      StreamOperations<String, String, String> streamOps = redisTemplate.opsForStream();
+      PendingMessagesSummary pendingSummary = streamOps.pending(getStreamName(), getGroupName());
+
+      if (Objects.requireNonNull(pendingSummary).getTotalPendingMessages() == 0) {
+        log.debug("{} Pending 메시지 없음", getStreamName());
+        return;
+      }
+
+      log.info("총 {} Pending 메시지 개수: {}", getStreamName(), pendingSummary.getTotalPendingMessages());
+
+      for (String consumerId : consumerIds) {
+        try {
+          processPendingMessagesForConsumer(streamOps, consumerId);
+        } catch (Exception e) {
+          log.error("Consumer {} Pending 메시지 처리 실패: {}", consumerId, e.getMessage(), e);
+        }
+      }
+    } catch (Exception e) {
+      log.error("{} Pending 메시지 처리 중 예외 발생: {}", getStreamName(), e.getMessage(), e);
+    }
+  }
+
+  /**
+   * 특정 컨슈머의 처리되지 않은 메시지(Pending) 처리.
+   */
+  protected void processPendingMessagesForConsumer(StreamOperations<String, String, String> streamOps, String consumerId) {
+    try {
+      // 특정 consumer의 pending 메시지 조회
+      PendingMessages pendingMessages = streamOps.pending(
+        getStreamName(),
+        Consumer.from(getGroupName(), consumerId),
+        Range.unbounded(),
+        100L); // 최대 100개 조회
+
+      if (pendingMessages.isEmpty()) {
+        log.debug("컨슈머 {}의 Pending 메시지 없음", consumerId);
+        return;
+      }
+
+      log.info("컨슈머 {}의 Pending 메시지 {}개 처리 시작", consumerId, pendingMessages.size());
+
+      // Pending 메시지 재처리
+      for (PendingMessage pending : pendingMessages) {
+        String messageId = pending.getId().getValue();
+
+        try {
+          List<MapRecord<String, String, String>> claimed = streamOps.claim(
+            getStreamName(),
+            getGroupName(),
+            consumerId,
+            Duration.ofSeconds(60),  // 최소 60초 이상 idle
+            pending.getId()
+          );
+
+          if (!claimed.isEmpty()) {
+            MapRecord<String, String, String> message = claimed.get(0);
+            log.info("{} Pending 메시지 재처리: {}", getStreamName(), messageId);
+            handleMessage(message);
+          }
+        } catch (Exception e) {
+          log.error("{} 메시지 claim 실패: {}, 에러: {}", getStreamName(), messageId, e.getMessage(), e);
+        }
+      }
+    } catch (Exception e) {
+      log.error("{} 컨슈머 {} Pending 메시지 처리 중 오류: {}",
+        getStreamName(), consumerId, e.getMessage(), e);
+    }
+  }
+
+  /**
+   * 스트림 메시지 정리 (트림).
+   * 스케줄러로 주기적으로 실행됨.
+   */
+  @Scheduled(fixedRate = 300000) // 5분 마다
+  public void trimStreams() {
+    try {
+      int maxMessages = getMaxMessages();
+      redisTemplate.opsForStream().trim(getStreamName(), maxMessages, true);
+      log.info("스트림 {} 정리 완료 (최대 {} 메시지 유지)", getStreamName(), maxMessages);
+    } catch (Exception e) {
+      log.warn("스트림 {} 정리 실패: {}", getStreamName(), e.getMessage(), e);
+    }
+  }
+
+  /**
+   * 스트림과 컨슈머 그룹이 존재하는지 확인하고, 없으면 생성합니다.
+   */
+  @PostConstruct
+  public void initStreamAndGroup() {
+    try {
+      boolean streamExists = Boolean.TRUE.equals(redisTemplate.hasKey(getStreamName()));
+
+      if (!streamExists) {
+        log.info("스트림 {}이(가) 존재하지 않아 새로 생성합니다.", getStreamName());
+        // 스트림 생성 (더미 메시지 추가)
+        redisTemplate.opsForStream().add(getStreamName(),
+          Collections.singletonMap("init", "true"));
+        // 바로 삭제 (스트림 생성 목적으로만 사용)
+        redisTemplate.opsForStream().trim(getStreamName(), 0);
+      }
+
+      try {
+        // 컨슈머 그룹 생성 시도
+        redisTemplate.opsForStream().createGroup(getStreamName(), getGroupName());
+        log.info("컨슈머 그룹 {} 생성 완료", getGroupName());
+      } catch (Exception e) {
+        // 이미 존재하는 경우 무시
+        log.debug("컨슈머 그룹 {} 이미 존재함: {}", getGroupName(), e.getMessage());
+      }
+
+    } catch (Exception e) {
+      log.error("스트림 {}와 그룹 {} 초기화 중 오류: {}",
+        getStreamName(), getGroupName(), e.getMessage(), e);
+    }
+  }
+}
+
+// 참고 handleMessage 에서 받아온 messgae 를 DTO 로 전환하는 코드 예시 
 public static <T> TestDto<T> fromStreamMessage(MapRecord<String, String, String> message, Class<T> dataClass) throws JsonProcessingException {
   Map<String, String> messageValue = message.getValue();
   Object payloadObj = messageValue.get("payload");
@@ -129,96 +346,6 @@ public static <T> TestDto<T> fromStreamMessage(MapRecord<String, String, String>
   return objectMapper.readValue(jsonString, objectMapper.getTypeFactory().constructParametricType(TestDto.class, dataClass));
 }
 
-// pending 상태로 남아있는 메세지에 대한 재처리 
-@Scheduled(fixedRate = 60000) // 1분 마다
-public void processPendingMessages() {
-  StreamOperations<String, String, String> streamOps = redisTemplate.opsForStream();
-  PendingMessagesSummary pendingSummary = streamOps.pending(STREAM_NAME, GROUP);
-
-  if (Objects.requireNonNull(pendingSummary).getTotalPendingMessages() == 0) {
-    log.info("{} Pending 메시지 없음", STREAM_NAME);
-    return;
-  }
-
-  log.info("총 RCV Pending 메시지 개수: {}", pendingSummary.getTotalPendingMessages());
-
-  for (String consumerId : consumerIds) {
-    try {
-      processPendingMessage(streamOps, consumerId);
-    } catch (Exception e) {
-      log.error("Failed to process pending messages for consumer {}: {}", consumerId, e.getMessage());
-    }
-  }
-}
-
-private void processPendingMessage(StreamOperations<String, String, String> streamOps, String consumerId) {
-
-  try {
-
-    // 특정 consumer의 pending 메시지 조회
-    PendingMessages pendingMessages = streamOps.pending(STREAM_NAME,
-      Consumer.from(GROUP, consumerId),
-      Range.unbounded(),
-      100L); // 최대 100개 조회
-
-    if (pendingMessages.isEmpty()) {
-      log.info("해당 consumer의 {} Pending 메시지 없음", STREAM_NAME);
-      return;
-    }
-
-    log.info("처리할 {} Pending 메시지 개수: {}", STREAM_NAME, pendingMessages.size());
-
-    // Pending 메시지 재처리
-    for (PendingMessage pending : pendingMessages) {
-      String messageId = pending.getId().getValue();
-
-      try {
-        List<MapRecord<String, String, String>> claimed = streamOps.claim(
-          STREAM_NAME,
-          GROUP,
-          consumerId,
-          Duration.ofSeconds(60),  // 최소 60초 이상 idle
-          pending.getId()
-        );
-
-        if (!claimed.isEmpty()) {
-          MapRecord<String, String, String> message = claimed.get(0);
-          try {
-            log.info("{} Pending 재처리: {}", STREAM_NAME, message.getValue());
-            // 메시지 처리 로직
-            handleMessage(message); // 기존 handleMessage 메서드 재사용
-          } catch (Exception e) {
-            // 필요하면 재처리 dead-letter queue 전송
-            log.error("{} Pending 재처리 실패: {}, 에러: {}",STREAM_NAME , messageId, e.getMessage());
-          }
-        }
-      } catch (Exception e) {
-        log.error("{} 메시지 claim 실패: {}, 에러: {}",STREAM_NAME, messageId, e.getMessage());
-      }
-    }
-  } catch (Exception e) {
-    log.error("{} Pending 메시지 처리 중 오류 발생: {}", STREAM_NAME, e.getMessage(), e);
-  }
-}
-
-public String generateConsumerName() {
-  // 8자리 UUID 생성 (하이픈 제거)
-  String uuid = UUID.randomUUID().toString().replace("-", "");
-  consumerIds.add(uuid);
-  return String.format("%s-consumer-%s", STREAM_NAME, uuid);
-}
-
-// 데이터를 스트림에 유지하는 개수에 제한을 둔다
-@Scheduled(fixedRate = 300000) // 5분 마다
-public void trimStreams() {
-  try {
-    redisTemplate.opsForStream().trim(STREAM_NAME, 10000, true);
-    log.debug("Trimmed stream {} to max 10000 messages", STREAM_NAME);
-  } catch (Exception e) {
-    log.warn("Failed to trim stream {}: {}", STREAM_NAME, e.getMessage());
-  }
-
-}
 ```
 
 ### 회고 
