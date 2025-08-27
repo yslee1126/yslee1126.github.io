@@ -108,6 +108,8 @@ public class StreamSubscriptionConfig {
 ```
 
 - AbstractRedisStreamHandler 핸들러 구현하고 각 업무에서 상속 받아서 processMessage 를 구현하자 
+
+
 ```java
 @Slf4j
 public abstract class AbstractRedisStreamHandler {
