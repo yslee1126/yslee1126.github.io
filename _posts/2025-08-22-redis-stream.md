@@ -138,9 +138,7 @@ public abstract class AbstractRedisStreamHandler {
   protected abstract int getMaxMessages();
 
   /**
-   * 스트림 메시지 처리 로직.
    * 실제 비즈니스 로직은 이 메서드에서 구현해야 합니다.
-   *
    * @param message 처리할 메시지
    */
   protected abstract void processMessage(MapRecord<String, String, String> message) throws JsonProcessingException;
@@ -353,12 +351,14 @@ public static <T> TestDto<T> fromStreamMessage(MapRecord<String, String, String>
 ### 회고 
 - 예외 상황을 안정적으로 처리하는 것도 중요하지만 try catch 가 너무 많아지는 건 추가로 고민해야 겠다  
   - 각종 예외 상황에서 알림 메세지 혹은 DLQ 를 이용한 재처리 로직이 필요하다 
+  - 실제로 해당 업무가 얼마나 QoS 를 보장해야 하는지에 따라서 구현해야하는 예외 처리가 많아지게 된다
 - 펜딩 메세지 처리등 스케줄러에 대한 정의를 Scheduled 사용했는데 그러지 말고 별도의 스케줄러 클래스를 하나 만들어서 모든 스케줄을 각각 엄무단위로 필요한 만큼 실행하도록 추상화가 필요하다  
 - 비지니스 로직이 길어질때 펜딩된 메세지가 의도치 않게 재처리 되는 가능성을 점검해야한다 
   - 주기적으로 펜딩 메세지를 재처리하고 있기 때문에..
 - 스트림이 넘치면 잘라버리도록 되어있는데 이런 상황이 오기전에 알림 메세지라던가 서킷브레이커 같은 역할이 필요하다
-- 실제로 해당 엄무가 얼마나 QoS 를 보장해야 하는지에 따라서 구현해야하는 예외 처리가 많아지게 된다
 - 캐시로만 Redis 를 쓸때에는 lettuce pool 설정 안했는데 Stream 을 사용하면서 pool 크기를 신경쓰게 되었다 
 - 급하게 활용하기에는 Redis Stream도 좋은 솔루션이다 
   - 그러나 메세징이 핵심인 업무에는 카프카를 사용하거나 Redis 를 별도로 구축해서 사용하는게 맞는 것 같다
-  - Redis Stream 도 그리 간단하게 적용할 수 있는 솔루션은 아닌것 같다 
+    - Redis Stream 은 하나의 스트림이 한일노드에서 동작할 수 밖에 없는 구조이다 
+  - 그리고 Redis Stream 도 그리 간단하게 적용할 수 있는 솔루션은 아닌것 같다 
+    - 메세지 재처리에 대한 고민이.. 
