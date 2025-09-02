@@ -216,7 +216,6 @@ public abstract class AbstractRedisStreamHandler {
    * 처리되지 않은 메시지(Pending) 처리.
    * 스케줄러로 주기적으로 실행됨.
    */
-  @Scheduled(fixedRate = 60000) // 1분 마다
   public void processPendingMessages() {
     try {
       StreamOperations<String, String, String> streamOps = redisTemplate.opsForStream();
@@ -292,7 +291,6 @@ public abstract class AbstractRedisStreamHandler {
    * 스트림 메시지 정리 (트림).
    * 스케줄러로 주기적으로 실행됨.
    */
-  @Scheduled(fixedRate = 300000) // 5분 마다
   public void trimStreams() {
     try {
       int maxMessages = getMaxMessages();
@@ -346,13 +344,235 @@ public static <T> TestDto<T> fromStreamMessage(MapRecord<String, String, String>
   return objectMapper.readValue(jsonString, objectMapper.getTypeFactory().constructParametricType(TestDto.class, dataClass));
 }
 
+@Component
+@Slf4j
+@ConditionalOnProperty(name = "redis.stream.enabled", havingValue = "true", matchIfMissing = false)
+public class StreamScheduler {
+
+  @Autowired
+  private List<AbstractRedisStreamHandler> streamHandlers;
+
+  @Autowired
+  private StringRedisTemplate redisTemplate;
+
+  private static final long INACTIVE_CONSUMER_TIMEOUT_MINUTES = 5; // 5분 이상 유휴 시간이면 비활성 컨슈머로 간주
+
+  @Scheduled(fixedRate = 60000, initialDelay = 10000) // 1분마다
+  public void processPendingMessagesForAllHandlers() {
+    log.debug("모든 핸들러의 Pending 메시지 처리 시작");
+
+    for (AbstractRedisStreamHandler handler : streamHandlers) {
+      try {
+        log.debug("{} 핸들러 Pending 메시지 처리 시작", handler.getStreamName());
+        handler.processPendingMessages();
+      } catch (Exception e) {
+        log.error("{} 핸들러 Pending 메시지 처리 실패: {}",
+          handler.getStreamName(), e.getMessage(), e);
+      }
+    }
+
+    log.debug("모든 핸들러의 Pending 메시지 처리 완료");
+  }
+
+  /**
+   * 비활성 컨슈머를 정리합니다.
+   * XINFO CONSUMERS 명령어를 사용하여 컨슈머의 idle time을 체크하고,
+   * 5분 이상 idle 상태인 컨슈머는 비활성으로 간주하여 정리합니다.
+   */
+  @Scheduled(fixedRate = 60000, initialDelay = 30000) // 1분마다, 30초 후 시작
+  public void cleanupInactiveConsumers() {
+    log.debug("비활성 컨슈머 정리 시작");
+
+    for (AbstractRedisStreamHandler handler : streamHandlers) {
+      try {
+        String streamName = handler.getStreamName();
+        String groupName = handler.getGroupName();
+
+        log.debug("{} 스트림의 컨슈머 그룹 {} 비활성 컨슈머 확인 시작", streamName, groupName);
+
+        // 스트림 컨슈머 정보 조회
+        List<StreamInfo.XInfoConsumer> consumerList = getConsumerInfo(streamName, groupName);
+
+        if (consumerList.isEmpty()) {
+          log.debug("{} 스트림의 컨슈머 그룹 {}에 컨슈머가 없습니다.", streamName, groupName);
+          continue;
+        }
+
+        // 현재 핸들러의 유효한 컨슈머 ID 목록
+        Set<String> validConsumerIds = handler.getConsumerIds();
+
+        // 각 컨슈머 정보 처리
+        for (StreamInfo.XInfoConsumer consumer : consumerList) {
+          try {
+            String consumerId = consumer.consumerName();
+            long idleTime = consumer.idleTimeMs();
+            long pendingCount = consumer.pendingCount();
+
+            // consumerId는 XInfoConsumer에서 항상 존재함
+
+            // 유효한 컨슈머인지 확인 (현재 애플리케이션 인스턴스에서 관리 중인 컨슈머)
+            boolean isValidConsumer = validConsumerIds.contains(consumerId);
+
+            // idle time이 5분(300000ms) 이상이고 현재 애플리케이션 인스턴스의 컨슈머가 아니면 비활성 컨슈머로 간주
+            boolean isInactive = idleTime > INACTIVE_CONSUMER_TIMEOUT_MINUTES * 60 * 1000;
+
+            if (isInactive && !isValidConsumer) {
+              log.info("{} 스트림의 컨슈머 {}가 {}ms 동안 비활성 상태입니다. 정리를 시도합니다.",
+                streamName, consumerId, idleTime);
+
+              if (pendingCount > 0) {
+                // pending 메시지가 있는 경우 재할당 처리
+                reassignPendingMessages(handler, consumerId, validConsumerIds);
+              }
+
+              // 컨슈머 제거
+              removeInactiveConsumer(handler, consumerId);
+            }
+          } catch (Exception e) {
+            log.error("컨슈머 정보 처리 중 오류: {}", e.getMessage(), e);
+          }
+        }
+
+      } catch (Exception e) {
+        log.error("{} 스트림의 비활성 컨슈머 정리 중 오류: {}",
+          handler.getStreamName(), e.getMessage(), e);
+      }
+    }
+
+    log.debug("비활성 컨슈머 정리 완료");
+  }
+
+  /**
+   * 비활성 컨슈머의 pending 메시지를 활성 컨슈머로 재할당합니다.
+   */
+  private void reassignPendingMessages(AbstractRedisStreamHandler handler, String inactiveConsumerId, Set<String> validConsumerIds) {
+    String streamName = handler.getStreamName();
+    String groupName = handler.getGroupName();
+
+    try {
+      // 활성 컨슈머 찾기
+      String targetConsumerId = null;
+      for (String id : validConsumerIds) {
+        targetConsumerId = id;
+        break; // 첫 번째 유효한 컨슈머 선택
+      }
+
+      if (targetConsumerId == null) {
+        log.warn("{} 스트림의 비활성 컨슈머 {}의 메시지를 재할당할 활성 컨슈머가 없습니다.",
+          streamName, inactiveConsumerId);
+        return;
+      }
+
+      StreamOperations<String, String, String> streamOps = redisTemplate.opsForStream();
+      // 비활성 컨슈머의 pending 메시지 조회
+      PendingMessages pendingMessages = streamOps.pending(
+        streamName,
+        Consumer.from(groupName, inactiveConsumerId),
+        Range.unbounded(),
+        100L); // 최대 100개 처리
+
+      if (pendingMessages.isEmpty()) {
+        log.info("{} 스트림의 비활성 컨슈머 {}의 pending 메시지가 없습니다.", streamName, inactiveConsumerId);
+        return;
+      }
+
+      log.info("{} 스트림의 비활성 컨슈머 {}의 {}개 pending 메시지를 컨슈머 {}로 재할당합니다.",
+        streamName, inactiveConsumerId, pendingMessages.size(), targetConsumerId);
+
+      // pending 메시지 재할당
+      for (PendingMessage pending : pendingMessages) {
+        try {
+          List<MapRecord<String, String, String>> claimed = streamOps.claim(
+            streamName,
+            groupName,
+            targetConsumerId,
+            Duration.ofSeconds(60),  // 최소 60초 이상 idle
+            pending.getId());
+
+          if (!claimed.isEmpty()) {
+            log.debug("{} 스트림의 메시지 {}를 컨슈머 {}에서 {}로 재할당했습니다.",
+              streamName, pending.getId().getValue(), inactiveConsumerId, targetConsumerId);
+          }
+        } catch (Exception e) {
+          log.warn("{} 스트림의 메시지 {} 재할당 중 오류: {}",
+            streamName, pending.getId().getValue(), e.getMessage());
+        }
+      }
+    } catch (Exception e) {
+      log.error("{} 스트림의 비활성 컨슈머 {} pending 메시지 재할당 중 오류: {}",
+        streamName, inactiveConsumerId, e.getMessage(), e);
+    }
+  }
+
+  /**
+   * 비활성 컨슈머를 삭제합니다.
+   */
+  private void removeInactiveConsumer(AbstractRedisStreamHandler handler, String inactiveConsumerId) {
+    String streamName = handler.getStreamName();
+    String groupName = handler.getGroupName();
+
+    try {
+      redisTemplate.opsForStream().deleteConsumer(
+        streamName,
+        Consumer.from(groupName, inactiveConsumerId));
+
+      log.info("{} 스트림의 컨슈머 그룹 {}에서 비활성 컨슈머 {}를 제거했습니다.",
+        streamName, groupName, inactiveConsumerId);
+    } catch (Exception e) {
+      log.warn("{} 스트림의 비활성 컨슈머 {} 제거 중 오류: {}",
+        streamName, inactiveConsumerId, e.getMessage());
+    }
+  }
+
+
+  /**
+   * Redis 스트림의 컨슈머 정보를 조회합니다.
+   */
+  private List<StreamInfo.XInfoConsumer> getConsumerInfo(String streamName, String groupName) {
+    try {
+      StreamOperations<String, String, String> streamOps = redisTemplate.opsForStream();
+      StreamInfo.XInfoConsumers consumers = streamOps.consumers(streamName, groupName);
+      return consumers.stream().toList();
+    } catch (Exception e) {
+      log.warn("{} 스트림의 컨슈머 정보 조회 실패: {}", streamName, e.getMessage(), e);
+      return Collections.emptyList();
+    }
+  }
+
+  @Scheduled(fixedRate = 300000, initialDelay = 60000) // 5분마다
+  public void trimStreamsForAllHandlers() {
+    log.debug("모든 핸들러의 스트림 트림 시작");
+
+    // 순차 처리 (부하 분산)
+    for (AbstractRedisStreamHandler handler : streamHandlers) {
+      try {
+        log.debug("{} 핸들러 스트림 트림 시작", handler.getStreamName());
+        handler.trimStreams();
+      } catch (Exception e) {
+        log.error("{} 핸들러 스트림 트림 실패: {}",
+          handler.getStreamName(), e.getMessage(), e);
+      }
+
+      // 핸들러 간 약간의 지연 추가 (선택 사항)
+      try {
+        Thread.sleep(200);
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
+    }
+
+    log.debug("모든 핸들러의 스트림 트림 완료");
+  }
+
+
+}
+
 ```
 
 ### 회고 
 - 예외 상황을 안정적으로 처리하는 것도 중요하지만 try catch 가 너무 많아지는 건 추가로 고민해야 겠다  
   - 각종 예외 상황에서 알림 메세지 혹은 DLQ 를 이용한 재처리 로직이 필요하다 
   - 실제로 해당 업무가 얼마나 QoS 를 보장해야 하는지에 따라서 구현해야하는 예외 처리가 많아지게 된다
-- 펜딩 메세지 처리등 스케줄러에 대한 정의를 Scheduled 사용했는데 그러지 말고 별도의 스케줄러 클래스를 하나 만들어서 모든 스케줄을 각각 엄무단위로 필요한 만큼 실행하도록 추상화가 필요하다  
 - 비지니스 로직이 길어질때 펜딩된 메세지가 의도치 않게 재처리 되는 가능성을 점검해야한다 
   - 주기적으로 펜딩 메세지를 재처리하고 있기 때문에..
 - 스트림이 넘치면 잘라버리도록 되어있는데 이런 상황이 오기전에 알림 메세지라던가 서킷브레이커 같은 역할이 필요하다
